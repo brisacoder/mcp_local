@@ -1,0 +1,28 @@
+{
+    "mcpServers": {
+        "filesystem": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "C:/Users/dev/Dropbox/GitHub/mcp_local"
+            ],
+            "transport": "stdio"
+        },    
+        "playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest"
+            ],
+            "transport": "stdio"
+        },
+        "everything": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-everything"
+            ],
+            "transport": "stdio"
+        }        
+    } 
+}
