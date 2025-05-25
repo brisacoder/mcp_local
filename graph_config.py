@@ -5,11 +5,24 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 
-class Weather(BaseModel):
-    """A simple model to represent weather data."""
+class WeatherDay(BaseModel):
+    """A model to represent weather data for a single day."""
 
     temperature: float = Field(description="The weather temperature")
-    condition: str = Field(description="The weather condition, e.g., sunny, rainy, etc.")
+    condition: str = Field(
+        description="The weather condition, e.g., sunny, rainy, etc."
+    )
+    weekday: str = Field(
+        description="The day of the week, e.g., Monday, Tuesday, etc."
+    )
+
+
+class Weather(BaseModel):
+    """A model to represent a list of weather days."""
+
+    days: List[WeatherDay] = Field(
+        description="A list of weather data for multiple days"
+    )
 
 
 class GraphConfig:
@@ -71,15 +84,6 @@ class GraphConfig:
             Runnable: An instance of a Runnable object that represents the LLM with structured output enabled.
         """
         return self.llm_with_structured
-
-    # def get_llm_tools(self) -> list[BaseTool]:
-    #     """
-    #     Returns the LLM (Large Language Model) tools as a Runnable object.
-
-    #     Returns:
-    #         Runnable: The tools associated with the LLM.
-    #     """
-    #     return self.tools
 
 
 graph_config = GraphConfig()

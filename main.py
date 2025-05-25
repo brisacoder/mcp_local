@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-import platform
 from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -135,8 +134,11 @@ def send_tool_result_to_llm(state: State, config) -> Command[Literal[END]]:
         content="Provide a summary of the weather in NYC based on the Microsoft Playwright output"
     )
     weather: Weather = llm_with_structured.invoke(state["messages"] + [human_message])
+    forecast = ""
+    for day in weather.days:
+        forecast += f"Day: {day.weekday}, Temperature: {day.temperature}°C, Condition: {day.condition}\n"
     ai_resp = AIMessage(
-        content=f"The weather in NYC is {weather.temperature}°C with {weather.condition}."
+        content=f"Forecast for NYC is:\n{forecast}."
     )
     return Command(update={"messages": ai_resp}, goto=END)
 
@@ -178,8 +180,8 @@ async def main():
         {"messages": [SystemMessage(content="You are a helpful assistant.")]},
         config=graph_config.create_config(),
     )
-    print("Weather Response:", weather_response)
-
+    for m in weather_response["messages"]:
+        m.pretty_print()
 
 if __name__ == "__main__":
     # Run the main function in an asyncio event loop
