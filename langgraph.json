@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "mcp": "./main.py:lg_graph"
+  },
+  "env": "./.env"
+}

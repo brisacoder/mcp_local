@@ -2,3 +2,7 @@ langgraph
 langchain[openai]
 langchain-mcp-adapters
 python-dotenv
+ipython
+pydantic
+langgraph-cli[inmem]
+aiofiles
