@@ -1,20 +1,14 @@
 import asyncio
 import inspect
 from typing import Annotated, Literal, TypedDict
-
 from dotenv import load_dotenv
-from IPython.display import Image, display
-from langchain_core.messages import (
-    AIMessage,
-    AnyMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, AnyMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from graph_config import Weather, graph_config
 from mcp_tools import get_mcp_tools
@@ -33,6 +27,31 @@ class State(TypedDict):
 
     graph_state: str
     messages: Annotated[list[AnyMessage], add_messages]
+    mcp_tools: list[BaseTool]
+
+
+async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_node"]]:
+    """
+    Loads the MCP tools into the state and transitions to the user query node.
+
+    This function retrieves the MCP tools from the configuration, updates the state with these tools,
+    and prepares to send a user query.
+
+    Args:
+        state (State): The current state of the application.
+        config: Configuration dictionary that may include tool settings.
+
+    Returns:
+        Command[Literal["send_user_query_node"]]: A command object that updates the state with tools
+        and transitions to the "send_user_query_node".
+    """
+    frame = inspect.currentframe()
+    if frame is not None:
+        print(frame.f_code.co_name)
+    else:
+        print("Could not get current frame name")
+    tools = await get_mcp_tools()
+    return Command(update={"mcp_tools": tools}, goto="send_user_query_node")
 
 
 def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
@@ -153,15 +172,15 @@ async def build_graph():
     tools = await get_mcp_tools()
     graph_config.set_llm_with_tools(tools)
     builder = StateGraph(State)
+    builder.add_node("load_mcp_tools_node", load_mcp_tools_node)
     builder.add_node("send_user_query_node", send_user_query_node)
     builder.add_node("send_tool_result_to_llm", send_tool_result_to_llm)
     builder.add_node(ToolNode(tools))
     builder.add_edge("tools", "send_tool_result_to_llm")
-    # builder.add_node("tools_node", tools_node)
-
-    builder.add_edge(START, "send_user_query_node")
+    builder.add_edge(START, "load_mcp_tools_node")
     graph = builder.compile()
-    # display(Image(graph.get_graph().draw_mermaid_png()))
+    with open("graph.png", "wb") as f:
+        f.write(graph.get_graph().draw_mermaid_png())
     return graph
 
 
