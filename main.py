@@ -1,20 +1,29 @@
 import asyncio
 import inspect
 from typing import Annotated, Literal, TypedDict
+
 from dotenv import load_dotenv
-from langchain_core.messages import (AIMessage, AnyMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
-from graph_config import Weather, graph_config
+from langchain_core.tools.structured import StructuredTool
+
+from graph_config import Flights, Weather, graph_config
 from mcp_tools import get_mcp_tools
 
 load_dotenv(override=True)  # Load environment variables from .env file
+# In memory
 
 
 class State(TypedDict):
@@ -28,7 +37,7 @@ class State(TypedDict):
 
     graph_state: str
     messages: Annotated[list[AnyMessage], add_messages]
-    mcp_tools: list[BaseTool]
+    mcp_tools: list[StructuredTool]
 
 
 async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_node"]]:
@@ -80,12 +89,7 @@ def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
     else:
         print("Could not get current frame name")
     llm_with_tools: Runnable = config["configurable"]["llm_with_tools"]
-    messages = [
-        HumanMessage(
-            content="Use a browser to find what is the weather in NYC and provide a summary"
-        )
-    ]
-    ai_resp = llm_with_tools.invoke(state["messages"] + messages)
+    ai_resp = llm_with_tools.invoke(state["messages"])
     if ai_resp.tool_calls:
         # If the AI response contains tool calls, we can handle them here
         return Command(update={"messages": ai_resp}, goto="tools")
@@ -153,14 +157,26 @@ def send_tool_result_to_llm(state: State, config) -> Command[Literal[END]]:
     human_message = HumanMessage(
         content="Provide a summary based on the Microsoft Playwright output"
     )
-    weather: Weather = llm_with_structured.invoke(state["messages"] + [human_message])
-    forecast = ""
-    for day in weather.days:
-        forecast += f"Day: {day.weekday}, Temperature: {day.temperature}°C, Condition: {day.condition}\n"
-    ai_resp = AIMessage(
-        content=f"Forecast for NYC is:\n{forecast}."
+    ai_resp = llm_with_structured.invoke(state["messages"] + [human_message])
+    if isinstance(ai_resp, Weather):
+        forecast = ""
+        for day in ai_resp.days:
+            forecast += f"Day: {day.weekday}, Temperature: {day.temperature}°C, Condition: {day.condition}\n"
+        ai_message = AIMessage(content=f"Forecast for NYC is:\n{forecast}.")
+        return Command(update={"messages": ai_message}, goto=END)
+    if isinstance(ai_resp, Flights):
+        flight_info = ""
+        for flight in ai_resp.flights:
+            flight_info += (
+                f"Flight from {flight.departure_city} to {flight.arrival_city}, "
+                f"Airline: {flight.airline}, Price: {flight.price}\n"
+            )
+        ai_message = AIMessage(content=f"Flight information:\n{flight_info}.")
+        return Command(update={"messages": ai_message}, goto=END)
+    raise ValueError(
+        "The response from the LLM is not of type Weather. "
+        "Expected a Weather object with structured output."
     )
-    return Command(update={"messages": ai_resp}, goto=END)
 
 
 async def build_graph():
@@ -180,7 +196,8 @@ async def build_graph():
     builder.add_edge("tools", "send_tool_result_to_llm")
     builder.add_edge(START, "load_mcp_tools_node")
     memory = MemorySaver()
-    graph = builder.compile(checkpointer=memory)
+    #graph = builder.compile(checkpointer=memory)
+    graph = builder.compile()
     with open("graph.png", "wb") as f:
         f.write(graph.get_graph().draw_mermaid_png())
     return graph
@@ -198,9 +215,14 @@ async def main():
     """
     graph = await build_graph()
     gc = graph_config.create_config()
-    messages = [SystemMessage(content="You are a helpful assistant and use tools to fullfill requests"), 
-                HumanMessage(content="Use a browser to find what is the weather in NYC and provide a summary"
-        )]
+    messages = [
+        SystemMessage(
+            content="You are a helpful assistant and use tools to fullfill user's requests"
+        ),
+        HumanMessage(
+            content="Use a browser to find what is the weather in NYC and provide a summary"
+        ),
+    ]
 
     weather_response = await graph.ainvoke(
         {"messages": messages},
@@ -213,6 +235,7 @@ async def main():
     flight_response = await graph.ainvoke({"messages": messages}, config=gc)
     for m in flight_response["messages"]:
         m.pretty_print()
+
 
 if __name__ == "__main__":
     # Run the main function in an asyncio event loop
