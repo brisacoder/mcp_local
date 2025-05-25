@@ -12,9 +12,7 @@ class WeatherDay(BaseModel):
     condition: str = Field(
         description="The weather condition, e.g., sunny, rainy, etc."
     )
-    weekday: str = Field(
-        description="The day of the week, e.g., Monday, Tuesday, etc."
-    )
+    weekday: str = Field(description="The day of the week, e.g., Monday, Tuesday, etc.")
 
 
 class Weather(BaseModel):
@@ -51,6 +49,7 @@ class GraphConfig:
             "configurable": {
                 "llm_with_tools": self.llm_with_tools,
                 "llm_with_structured": self.llm_with_structured,
+                "thread_id": "1",
             }
         }
         return self.config

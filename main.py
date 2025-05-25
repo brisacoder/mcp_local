@@ -7,6 +7,7 @@ from langchain_core.messages import (AIMessage, AnyMessage, HumanMessage,
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
@@ -150,7 +151,7 @@ def send_tool_result_to_llm(state: State, config) -> Command[Literal[END]]:
     llm_with_structured: Runnable = config["configurable"]["llm_with_structured"]
     # You may want to use tool_result in the update, for now just return a placeholder
     human_message = HumanMessage(
-        content="Provide a summary of the weather in NYC based on the Microsoft Playwright output"
+        content="Provide a summary based on the Microsoft Playwright output"
     )
     weather: Weather = llm_with_structured.invoke(state["messages"] + [human_message])
     forecast = ""
@@ -178,7 +179,8 @@ async def build_graph():
     builder.add_node(ToolNode(tools))
     builder.add_edge("tools", "send_tool_result_to_llm")
     builder.add_edge(START, "load_mcp_tools_node")
-    graph = builder.compile()
+    memory = MemorySaver()
+    graph = builder.compile(checkpointer=memory)
     with open("graph.png", "wb") as f:
         f.write(graph.get_graph().draw_mermaid_png())
     return graph
@@ -195,11 +197,21 @@ async def main():
         Prints the weather response to the console.
     """
     graph = await build_graph()
+    gc = graph_config.create_config()
+    messages = [SystemMessage(content="You are a helpful assistant and use tools to fullfill requests"), 
+                HumanMessage(content="Use a browser to find what is the weather in NYC and provide a summary"
+        )]
+
     weather_response = await graph.ainvoke(
-        {"messages": [SystemMessage(content="You are a helpful assistant.")]},
-        config=graph_config.create_config(),
+        {"messages": messages},
+        config=gc,
     )
     for m in weather_response["messages"]:
+        m.pretty_print()
+
+    messages = [HumanMessage(content="Find me a flight from SF to NYC")]
+    flight_response = await graph.ainvoke({"messages": messages}, config=gc)
+    for m in flight_response["messages"]:
         m.pretty_print()
 
 if __name__ == "__main__":
