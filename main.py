@@ -18,7 +18,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from langchain_core.tools.structured import StructuredTool
-import mcp
+
 
 from graph_config import Flights, Weather, graph_config
 from mcp_tools import get_mcp_tools
@@ -62,8 +62,8 @@ async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_
     else:
         print("Could not get current frame name")
     tools = await get_mcp_tools()
-    mcp_tools = [tool.model_dump() for tool in tools] if tools is not None else []
-    return Command(update={"mcp_tools": mcp_tools}, goto="send_user_query_node")
+    graph_config.set_mcp_tools(tools)
+    return Command(goto="send_user_query_node")
 
 
 def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
@@ -123,8 +123,7 @@ def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm
         raise ValueError(
             "No tool calls found in the latest message or message type does not support tool calls."
         )
-
-    tools = config["configurable"]["tools"]
+    tools = graph_config.mcp_tools
     tools_by_name = {tool.name: tool for tool in tools}
     result = []
 
@@ -191,12 +190,12 @@ async def build_graph():
     tools = await get_mcp_tools()
     graph_config.set_llm_with_tools(tools)
     builder = StateGraph(State)
-    # builder.add_node("load_mcp_tools_node", load_mcp_tools_node)
+    builder.add_node("load_mcp_tools_node", load_mcp_tools_node)
     builder.add_node("send_user_query_node", send_user_query_node)
     builder.add_node("send_tool_result_to_llm", send_tool_result_to_llm)
     builder.add_node(ToolNode(tools))
     builder.add_edge("tools", "send_tool_result_to_llm")
-    builder.add_edge(START, "send_user_query_node")
+    builder.add_edge(START, "load_mcp_tools_node")
     memory = MemorySaver()
     graph = builder.compile(checkpointer=memory)
     # graph = builder.compile()

@@ -1,8 +1,9 @@
 import json
-from typing import Dict
+from typing import Dict, List
 
 import aiofiles
 from langchain_core.tools import BaseTool
+from langchain_core.tools.structured import StructuredTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
@@ -20,7 +21,7 @@ async def load_servers(config_path: str) -> Dict:
     return config
 
 
-async def get_mcp_tools() -> list[BaseTool] | None:
+async def get_mcp_tools() -> List[StructuredTool]:
     """Main function to run the MCP client."""
     mcp_servers = await load_servers("mcp_config.json")
 
