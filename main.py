@@ -137,7 +137,7 @@ def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm
 
 
 # Nodes
-def filter_messages_and_rerun_node(state: State) -> Literal["tools", END]:
+def filter_messages_and_rerun_node(state: State) -> Command[Literal["tools"]]:
     delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][-1:]]
     return Command(update={"messages": delete_messages}, goto="tools")
 
