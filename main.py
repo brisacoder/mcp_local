@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Any, List, Literal, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import (
@@ -18,6 +18,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from langchain_core.tools.structured import StructuredTool
+import mcp
 
 from graph_config import Flights, Weather, graph_config
 from mcp_tools import get_mcp_tools
@@ -37,7 +38,7 @@ class State(TypedDict):
 
     graph_state: str
     messages: Annotated[list[AnyMessage], add_messages]
-    mcp_tools: list[StructuredTool]
+    mcp_tools: List[dict[str, Any]]
 
 
 async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_node"]]:
@@ -61,7 +62,8 @@ async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_
     else:
         print("Could not get current frame name")
     tools = await get_mcp_tools()
-    return Command(update={"mcp_tools": tools}, goto="send_user_query_node")
+    mcp_tools = [tool.model_dump() for tool in tools] if tools is not None else []
+    return Command(update={"mcp_tools": mcp_tools}, goto="send_user_query_node")
 
 
 def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
@@ -189,15 +191,15 @@ async def build_graph():
     tools = await get_mcp_tools()
     graph_config.set_llm_with_tools(tools)
     builder = StateGraph(State)
-    builder.add_node("load_mcp_tools_node", load_mcp_tools_node)
+    # builder.add_node("load_mcp_tools_node", load_mcp_tools_node)
     builder.add_node("send_user_query_node", send_user_query_node)
     builder.add_node("send_tool_result_to_llm", send_tool_result_to_llm)
     builder.add_node(ToolNode(tools))
     builder.add_edge("tools", "send_tool_result_to_llm")
-    builder.add_edge(START, "load_mcp_tools_node")
+    builder.add_edge(START, "send_user_query_node")
     memory = MemorySaver()
-    #graph = builder.compile(checkpointer=memory)
-    graph = builder.compile()
+    graph = builder.compile(checkpointer=memory)
+    # graph = builder.compile()
     with open("graph.png", "wb") as f:
         f.write(graph.get_graph().draw_mermaid_png())
     return graph
@@ -231,7 +233,7 @@ async def main():
     for m in weather_response["messages"]:
         m.pretty_print()
 
-    messages = [HumanMessage(content="Find me a flight from SF to NYC")]
+    messages = [HumanMessage(content="Give me options for a flight from SF to NYC tomorrow, returning 3 days later")]
     flight_response = await graph.ainvoke({"messages": messages}, config=gc)
     for m in flight_response["messages"]:
         m.pretty_print()
