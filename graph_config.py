@@ -3,6 +3,7 @@ from typing import List
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 
 class GraphConfig:
@@ -17,7 +18,7 @@ class GraphConfig:
     def __init__(self):
         self.llm = ChatOpenAI(model="gpt-4.1")
         self.llm_with_tools = None
-        self.llm_with_structured = self.llm.with_structured_output(schema=Weather)
+        self.llm_with_structured = None
         self.mcp_tools = []
         self.thread_id = random.randint(1, 10)
         self.config: RunnableConfig = None
@@ -58,7 +59,12 @@ class GraphConfig:
         Returns:
             None
         """
-        self.llm_with_tools = self.llm.bind_tools(tools)
+        self.llm_with_tools = self.llm.bind_tools(tools, tool_choice="required")
+
+
+    def set_llm_with_structured(self, schema: BaseModel) -> None:
+        self.llm_with_structured = self.llm.with_structured_output(schema=schema)
+    
 
     def get_llm_with_tools(self) -> Runnable:
         """

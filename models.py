@@ -1,4 +1,5 @@
-from typing import List
+from enum import Enum
+from typing import List, Literal
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +18,10 @@ class Weather(BaseModel):
 
     days: List[WeatherDay] = Field(
         description="A list of weather data for multiple days"
+    )
+    error: str = Field(
+        default="",
+        description="An optional error message if weather data could not be retrieved.",
     )
 
 
@@ -41,4 +46,16 @@ class Flights(BaseModel):
 
     flights: List[FlightOption] = Field(
         description="A list of available flight options from the departure city to the arrival city"
+    )
+
+
+class Topic(str, Enum):
+    WEATHER = "Weather"
+    AIR_TRAVEL = "AirTravel"
+    OTHER = "Other"
+
+
+class ConversationTopic(BaseModel):
+    topic: Topic = Field(
+        description="The selected conversation topic. Must be one of: Weather, AirTravel, Other."
     )

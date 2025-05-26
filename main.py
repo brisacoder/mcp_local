@@ -12,16 +12,17 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
+from langchain_core.messages import RemoveMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from langchain_core.tools.structured import StructuredTool
-
-
-from graph_config import Flights, Weather, graph_config
+from graph_config import graph_config
 from mcp_tools import get_mcp_tools
+from models import ConversationTopic, Flights, Topic, Weather
+from langchain_openai import ChatOpenAI
 
 load_dotenv(override=True)  # Load environment variables from .env file
 # In memory
@@ -90,7 +91,7 @@ def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
         print(frame.f_code.co_name)
     else:
         print("Could not get current frame name")
-    llm_with_tools: Runnable = config["configurable"]["llm_with_tools"]
+    llm_with_tools: Runnable = graph_config.get_llm_with_tools()
     ai_resp = llm_with_tools.invoke(state["messages"])
     if ai_resp.tool_calls:
         # If the AI response contains tool calls, we can handle them here
@@ -135,7 +136,13 @@ def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm
     return Command(update={"messages": result}, goto="send_tool_result_to_llm")
 
 
-def send_tool_result_to_llm(state: State, config) -> Command[Literal[END]]:
+# Nodes
+def filter_messages_and_rerun_node(state: State) -> Literal["tools", END]:
+    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][-1:]]
+    return Command(update={"messages": delete_messages}, goto="tools")
+
+
+def send_tool_result_to_llm(state: State, config) -> Command[Literal["filter_messages_and_rerun_node", END]]:
     """
     Sends the result of a tool execution to an LLM (Large Language Model) for further processing.
 
@@ -153,13 +160,18 @@ def send_tool_result_to_llm(state: State, config) -> Command[Literal[END]]:
         - Assumes the latest message in `state["messages"]` is the tool result to be sent.
         - The function currently returns a placeholder update with the tool result.
     """
-    llm_with_structured: Runnable = config["configurable"]["llm_with_structured"]
+    llm_with_structured: Runnable = graph_config.get_llm_with_structured()
     # You may want to use tool_result in the update, for now just return a placeholder
     human_message = HumanMessage(
-        content="Provide a summary based on the Microsoft Playwright output"
+        content="""
+        Parse the Microsoft Playwright output and provide the summary.
+        """
     )
     ai_resp = llm_with_structured.invoke(state["messages"] + [human_message])
     if isinstance(ai_resp, Weather):
+        if ai_resp.error != "":
+            print(f"Error getting weather forecast: {ai_resp.error}")
+            return Command(goto="filter_messages_and_rerun_node")
         forecast = ""
         for day in ai_resp.days:
             forecast += f"Day: {day.weekday}, Temperature: {day.temperature}°C, Condition: {day.condition}\n"
@@ -192,6 +204,7 @@ async def build_graph():
     builder = StateGraph(State)
     builder.add_node("load_mcp_tools_node", load_mcp_tools_node)
     builder.add_node("send_user_query_node", send_user_query_node)
+    builder.add_node("filter_messages_and_rerun_node", filter_messages_and_rerun_node)
     builder.add_node("send_tool_result_to_llm", send_tool_result_to_llm)
     builder.add_node(ToolNode(tools))
     builder.add_edge("tools", "send_tool_result_to_llm")
@@ -204,6 +217,25 @@ async def build_graph():
     return graph
 
 
+async def get_conversation_topic():
+    """
+    Asynchronously prompts the user for their travel needs, sends the input to a language model to determine the conversation topic, and returns both the user's message and the identified topic.
+
+    Returns:
+        tuple: A tuple containing the user's input message (str) and the determined conversation topic (str).
+    """
+    user_msg = input("Tell me about your travel needs? \n")
+
+    llm = ChatOpenAI(model="gpt-4.1")
+    llm_with_structured = llm.with_structured_output(schema=ConversationTopic)
+    messages = [
+        SystemMessage(content="Determine the topic of the conversation"),
+        HumanMessage(content=user_msg),
+    ]
+    conversation: Conversation = await llm_with_structured.ainvoke(messages)
+    return user_msg, conversation.topic.value
+
+
 async def main():
     """
     Asynchronously initializes language model tools, binds them to a GPT-4.1 chat model, constructs a processing graph, and invokes the graph with a system message to obtain a weather-related response.
@@ -214,14 +246,25 @@ async def main():
     Side Effects:
         Prints the weather response to the console.
     """
+    while True:
+        user_msg, topic = await get_conversation_topic()
+        if topic == Topic.OTHER.value:
+            print("I cannot answer that question!")
+        else:
+            break
+    if topic == Topic.WEATHER.value:
+        graph_config.set_llm_with_structured(schema=Weather)
+    else:
+        graph_config.set_llm_with_structured(schema=Flights)
+    
     graph = await build_graph()
     gc = graph_config.create_config()
     messages = [
         SystemMessage(
-            content="You are a helpful assistant and use tools to fullfill user's requests"
+            content="You are a helpful assistant and can use browser tools to fullfill user's requests"
         ),
         HumanMessage(
-            content="Use a browser to find what is the weather in NYC and provide a summary"
+            content=user_msg
         ),
     ]
 
@@ -232,7 +275,11 @@ async def main():
     for m in weather_response["messages"]:
         m.pretty_print()
 
-    messages = [HumanMessage(content="Give me options for a flight from SF to NYC tomorrow, returning 3 days later")]
+    messages = [
+        HumanMessage(
+            content="Give me options for a flight from SF to NYC tomorrow, returning 3 days later"
+        )
+    ]
     flight_response = await graph.ainvoke({"messages": messages}, config=gc)
     for m in flight_response["messages"]:
         m.pretty_print()
