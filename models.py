@@ -23,6 +23,10 @@ class Weather(BaseModel):
         default="",
         description="An optional error message if weather data could not be retrieved.",
     )
+    website: str = Field(
+        default="",
+        description="The website used to retrieve the weather data, whether successful or not"
+    )
 
 
 class FlightOption(BaseModel):
