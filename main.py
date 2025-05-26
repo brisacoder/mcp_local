@@ -1,28 +1,29 @@
 import asyncio
 import inspect
-from typing import Annotated, Any, List, Literal, TypedDict
+from operator import add
+from typing import Annotated, Literal, Optional, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolMessage,
 )
 from langchain_core.runnables import Runnable
-from langchain_core.tools import BaseTool
-from langchain_core.messages import RemoveMessage
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import NodeInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.types import Command
-from langchain_core.tools.structured import StructuredTool
+from langgraph.types import Command, Send
+
 from graph_config import graph_config
 from mcp_tools import get_mcp_tools
 from models import ConversationTopic, Flights, Topic, Weather
-from langchain_openai import ChatOpenAI
 
 load_dotenv(override=True)  # Load environment variables from .env file
 # In memory
@@ -39,7 +40,7 @@ class State(TypedDict):
 
     graph_state: str
     messages: Annotated[list[AnyMessage], add_messages]
-    mcp_tools: List[dict[str, Any]]
+    failed_urls: Annotated[list[str], add]
 
 
 async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_node"]]:
@@ -137,12 +138,46 @@ def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm
 
 
 # Nodes
-def filter_messages_and_rerun_node(state: State) -> Command[Literal["tools"]]:
-    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][-1:]]
-    return Command(update={"messages": delete_messages}, goto="tools")
+def filter_messages_and_rerun_node(
+    state: State,
+) -> Command[Literal["send_user_query_node"]]:
+    """
+    Filters the messages in the given state to find the last human message, appends a note to avoid certain URLs,
+    and prepares a command to rerun the node with the updated message.
+
+    Args:
+        state (State): The current state containing messages and failed URLs.
+
+    Returns:
+        Command[Literal["send_user_query_node"]]: A command object instructing to update the messages with the modified
+        human message and transition to the "send_user_query_node".
+
+    Raises:
+        NodeInterrupt: If no human message is found in the state.
+    """
+
+    last_human_message: Optional[AnyMessage] = None
+    for m in range(len(state["messages"]) - 1, -1, -1):
+        if isinstance(state["messages"][m], HumanMessage):
+            last_human_message = state["messages"][m]
+            break
+    if last_human_message is None:
+        raise NodeInterrupt("No Human Message in graph state")
+    last_human_message_id = last_human_message.id
+    # New message to add
+    new_content = (
+        last_human_message.text()
+        + "\nAvoid the following URLs:"
+        + ", ".join(str(url) for url in state["failed_urls"])
+    )
+    new_message = HumanMessage(content=new_content, id=last_human_message_id)
+
+    return Command(update={"messages": new_message}, goto="send_user_query_node")
 
 
-def send_tool_result_to_llm(state: State, config) -> Command[Literal["filter_messages_and_rerun_node", END]]:
+def send_tool_result_to_llm(
+    state: State, config
+) -> Command[Literal["filter_messages_and_rerun_node", "__end__"]]:
     """
     Sends the result of a tool execution to an LLM (Large Language Model) for further processing.
 
@@ -151,7 +186,8 @@ def send_tool_result_to_llm(state: State, config) -> Command[Literal["filter_mes
         config: Configuration dictionary that may include LLM and tool integration settings.
 
     Returns:
-        Command[Literal["end_node"]]: A command object that updates the messages with the latest tool result and transitions to the "end_node".
+        Command[Literal["end_node"]]: A command object that updates the messages with the latest
+        tool result and transitions to the "end_node".
 
     Raises:
         ValueError: If the LLM with tools is not configured in the provided config.
@@ -171,12 +207,15 @@ def send_tool_result_to_llm(state: State, config) -> Command[Literal["filter_mes
     if isinstance(ai_resp, Weather):
         if ai_resp.error != "":
             print(f"Error getting weather forecast: {ai_resp.error}")
-            return Command(goto="filter_messages_and_rerun_node")
+            return Command(
+                update={"failed_urls": ai_resp.website},
+                goto="filter_messages_and_rerun_node",
+            )
         forecast = ""
         for day in ai_resp.days:
             forecast += f"Day: {day.weekday}, Temperature: {day.temperature}°C, Condition: {day.condition}\n"
         ai_message = AIMessage(content=f"Forecast for NYC is:\n{forecast}.")
-        return Command(update={"messages": ai_message}, goto=END)
+        return Command(update={"messages": ai_message}, goto="__end__")
     if isinstance(ai_resp, Flights):
         flight_info = ""
         for flight in ai_resp.flights:
@@ -256,16 +295,14 @@ async def main():
         graph_config.set_llm_with_structured(schema=Weather)
     else:
         graph_config.set_llm_with_structured(schema=Flights)
-    
+
     graph = await build_graph()
     gc = graph_config.create_config()
     messages = [
         SystemMessage(
             content="You are a helpful assistant and can use browser tools to fullfill user's requests"
         ),
-        HumanMessage(
-            content=user_msg
-        ),
+        HumanMessage(content=user_msg),
     ]
 
     weather_response = await graph.ainvoke(
