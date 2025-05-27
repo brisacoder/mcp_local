@@ -94,9 +94,10 @@ async def main():
     ]
     ai_resp = await llm_with_tools.ainvoke(messages)
     ai_resp.pretty_print()
-    # Now there are two tool calls in the response. These need to be as a batch by playwright/browser,
-    # Not in parallel, and not one at a time.
-
+    # Now there are two tool calls in the response. These need to be sent as a batch to 
+    # playwright/browser. Not in parallel, and not one at a time.
+    messages += [ai_resp]
+    tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
 
 if __name__ == "__main__":
     asyncio.run(main())
