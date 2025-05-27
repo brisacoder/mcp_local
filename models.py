@@ -25,7 +25,11 @@ class Weather(BaseModel):
     )
     website: str = Field(
         default="",
-        description="The website used to retrieve the weather data, whether successful or not"
+        description="The website used to retrieve the data, whether successful or not"
+    )
+    status_code: int = Field(
+        default=200,
+        description="The HTTP status code returned when retrieving the flight data"
     )
 
 
@@ -50,6 +54,18 @@ class Flights(BaseModel):
 
     flights: List[FlightOption] = Field(
         description="A list of available flight options from the departure city to the arrival city"
+    )
+    error: str = Field(
+        default="",
+        description="An optional error message if weather data could not be retrieved.",
+    )    
+    website: str = Field(
+        default="",
+        description="The website used to retrieve the data, whether successful or not"
+    )
+    status_code: int = Field(
+        default=200,
+        description="The HTTP status code returned when retrieving the flight data"
     )
 
 

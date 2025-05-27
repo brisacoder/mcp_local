@@ -3,9 +3,13 @@
         "playwright": {
             "command": "npx",
             "args": [
-                "@playwright/mcp@latest"
+                "@playwright/mcp@latest",
+                "--output-dir=./mcp_data",
+                "--save-trace",
+                "--storage-state=./mcp_storage_state",
+                "--user-data-dir=./mcp_data_dir"
             ],
-            "transport": "stdio"
+            "transport": "stdio" 
         }       
     } 
 }

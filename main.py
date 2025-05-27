@@ -68,7 +68,7 @@ async def load_mcp_tools_node(state: State) -> Command[Literal["send_user_query_
     return Command(goto="send_user_query_node")
 
 
-def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
+def send_user_query_node(state, config) -> Command[Literal["tools_node", END]]:
     """
     Executes a tool-calling node that interacts with an LLM
     configured in the state to answer a weather-related query.
@@ -96,11 +96,11 @@ def send_user_query_node(state, config) -> Command[Literal["tools", END]]:
     ai_resp = llm_with_tools.invoke(state["messages"])
     if ai_resp.tool_calls:
         # If the AI response contains tool calls, we can handle them here
-        return Command(update={"messages": ai_resp}, goto="tools")
+        return Command(update={"messages": ai_resp}, goto="tools_node")
     return Command(update={"messages": ai_resp}, goto=END)
 
 
-def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm"]]:
+async def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm"]]:
     """
     Handles the execution of tools based on the AI's response in the state.
 
@@ -118,22 +118,12 @@ def tools_node(state: State, config) -> Command[Literal["send_tool_result_to_llm
         - Assumes that the latest message in `state["messages"]` contains tool calls to be executed.
     """
     last_message = state["messages"][-1]
-    # Only AIMessage is expected to have tool_calls
-    if not hasattr(last_message, "tool_calls") or not getattr(
-        last_message, "tool_calls", None
-    ):
-        raise ValueError(
-            "No tool calls found in the latest message or message type does not support tool calls."
-        )
-    tools = graph_config.mcp_tools
-    tools_by_name = {tool.name: tool for tool in tools}
-    result = []
-
-    for tool_call in last_message.tool_calls:
-        tool = tools_by_name[tool_call["name"]]
-        observation = tool.arun(tool_call["args"])
-        result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
-
+    if not isinstance(last_message, AIMessage):
+        raise ValueError("The last message is not an AIMessage.")
+    # last_message.tool_calls
+    tool_node = ToolNode(graph_config.mcp_tools)
+    ret = await tool_node.ainvoke({"messages": [last_message]})
+    result = HumanMessage(content="die or bust!")
     return Command(update={"messages": result}, goto="send_tool_result_to_llm")
 
 
@@ -142,18 +132,23 @@ def filter_messages_and_rerun_node(
     state: State,
 ) -> Command[Literal["send_user_query_node"]]:
     """
-    Filters the messages in the given state to find the last human message, appends a note to avoid certain URLs,
-    and prepares a command to rerun the node with the updated message.
+    Filters messages in the given state to find the most recent human message,
+    appends a note instructing to avoid specific URLs, and prepares a command
+    to rerun the node with the updated message list.
 
     Args:
-        state (State): The current state containing messages and failed URLs.
+        state (State): The current state dictionary containing a list of
+            messages and a list of failed URLs.
 
     Returns:
-        Command[Literal["send_user_query_node"]]: A command object instructing to update the messages with the modified
-        human message and transition to the "send_user_query_node".
+        Command[Literal["send_user_query_node"]]: A command object that updates
+            the messages by replacing the last human message with a patched
+            version (including the avoid-URLs note), removes the last two
+            messages (typically AI and tool messages), and transitions
+            execution to the "send_user_query_node".
 
-    Raises:
-        NodeInterrupt: If no human message is found in the state.
+    Raises: NodeInterrupt
+
     """
 
     last_human_message: Optional[AnyMessage] = None
@@ -164,20 +159,26 @@ def filter_messages_and_rerun_node(
     if last_human_message is None:
         raise NodeInterrupt("No Human Message in graph state")
     last_human_message_id = last_human_message.id
-    # New message to add
+    # patch original human message to avoid certain URLs
     new_content = (
         last_human_message.text()
         + "\nAvoid the following URLs:"
         + ", ".join(str(url) for url in state["failed_urls"])
     )
-    new_message = HumanMessage(content=new_content, id=last_human_message_id)
-
-    return Command(update={"messages": new_message}, goto="send_user_query_node")
+    # Create patched human message
+    new_user_message = [HumanMessage(content=new_content, id=last_human_message_id)]
+    # Remove AI and ToolsMessage
+    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][-2:]]
+    messages = new_user_message + delete_messages
+    # Rerun Graph from send_user_query_node
+    return Command(update={"messages": messages}, goto="send_user_query_node")
 
 
 def send_tool_result_to_llm(
     state: State, config
-) -> Command[Literal["filter_messages_and_rerun_node", "__end__"]]:
+) -> Command[
+    Literal["filter_messages_and_rerun_node", "send_user_query_node", "__end__"]
+]:
     """
     Sends the result of a tool execution to an LLM (Large Language Model) for further processing.
 
@@ -206,24 +207,51 @@ def send_tool_result_to_llm(
     ai_resp = llm_with_structured.invoke(state["messages"] + [human_message])
     if isinstance(ai_resp, Weather):
         if ai_resp.error != "":
-            print(f"Error getting weather forecast: {ai_resp.error}")
-            return Command(
-                update={"failed_urls": ai_resp.website},
-                goto="filter_messages_and_rerun_node",
-            )
+            if ai_resp.status_code != 200:
+                print(f"Error getting weather forecast: {ai_resp.error}")
+                return Command(
+                    update={"failed_urls": [ai_resp.website]},
+                    goto="filter_messages_and_rerun_node",
+                )
+            else:
+                messages = [AIMessage(content=ai_resp.error)] + [
+                    HumanMessage(
+                        content="Navigate to the same page and type the destination into the proper field"
+                    )
+                ]
+                return Command(
+                    goto="send_user_query_node", update={"messages": messages}
+                )
         forecast = ""
         for day in ai_resp.days:
             forecast += f"Day: {day.weekday}, Temperature: {day.temperature}°C, Condition: {day.condition}\n"
         ai_message = AIMessage(content=f"Forecast for NYC is:\n{forecast}.")
         return Command(update={"messages": ai_message}, goto="__end__")
     if isinstance(ai_resp, Flights):
-        flight_info = ""
-        for flight in ai_resp.flights:
-            flight_info += (
-                f"Flight from {flight.departure_city} to {flight.arrival_city}, "
-                f"Airline: {flight.airline}, Price: {flight.price}\n"
-            )
+        flight_info = ai_resp.model_dump_json()
+        if ai_resp.error != "":
+            if ai_resp.status_code != 200:
+                print(f"Error getting flight information: {ai_resp.error}")
+                return Command(
+                    update={"failed_urls": [ai_resp.website]},
+                    goto="filter_messages_and_rerun_node",
+                )
+            else:
+                messages = [AIMessage(content=ai_resp.error)] + [
+                    HumanMessage(
+                        content="Navigate to the same page, type in the destination into the proper field and fill other fields as you please and click Explore"
+                    )
+                ]
+                return Command(
+                    goto="send_user_query_node", update={"messages": messages}
+                )
         ai_message = AIMessage(content=f"Flight information:\n{flight_info}.")
+        if ai_resp.error != "":
+            print(f"Error getting AirTravel info: {ai_resp.error}")
+            return Command(
+                update={"failed_urls": [ai_resp.website]},
+                goto="filter_messages_and_rerun_node",
+            )
         return Command(update={"messages": ai_message}, goto=END)
     raise ValueError(
         "The response from the LLM is not of type Weather. "
@@ -231,7 +259,7 @@ def send_tool_result_to_llm(
     )
 
 
-async def build_graph():
+async def build_graph(user_msg):
     """
     Builds and compiles a state graph with predefined nodes and edges, then displays its visualization.
 
@@ -245,8 +273,9 @@ async def build_graph():
     builder.add_node("send_user_query_node", send_user_query_node)
     builder.add_node("filter_messages_and_rerun_node", filter_messages_and_rerun_node)
     builder.add_node("send_tool_result_to_llm", send_tool_result_to_llm)
-    builder.add_node(ToolNode(tools))
-    builder.add_edge("tools", "send_tool_result_to_llm")
+    # builder.add_node(ToolNode(tools))
+    builder.add_node("tools_node", tools_node)
+    # builder.add_edge("tools", "send_tool_result_to_llm")
     builder.add_edge(START, "load_mcp_tools_node")
     memory = MemorySaver()
     graph = builder.compile(checkpointer=memory)
@@ -256,23 +285,21 @@ async def build_graph():
     return graph
 
 
-async def get_conversation_topic():
+async def get_conversation_topic(user_msg):
     """
     Asynchronously prompts the user for their travel needs, sends the input to a language model to determine the conversation topic, and returns both the user's message and the identified topic.
 
     Returns:
         tuple: A tuple containing the user's input message (str) and the determined conversation topic (str).
     """
-    user_msg = input("Tell me about your travel needs? \n")
-
     llm = ChatOpenAI(model="gpt-4.1")
     llm_with_structured = llm.with_structured_output(schema=ConversationTopic)
     messages = [
         SystemMessage(content="Determine the topic of the conversation"),
         HumanMessage(content=user_msg),
     ]
-    conversation: Conversation = await llm_with_structured.ainvoke(messages)
-    return user_msg, conversation.topic.value
+    conversation = await llm_with_structured.ainvoke(messages)
+    return conversation.topic.value
 
 
 async def main():
@@ -286,7 +313,8 @@ async def main():
         Prints the weather response to the console.
     """
     while True:
-        user_msg, topic = await get_conversation_topic()
+        user_msg = input("What can I help you for your travel needs? \n")
+        topic = await get_conversation_topic(user_msg)
         if topic == Topic.OTHER.value:
             print("I cannot answer that question!")
         else:
@@ -296,11 +324,13 @@ async def main():
     else:
         graph_config.set_llm_with_structured(schema=Flights)
 
-    graph = await build_graph()
+    graph = await build_graph(user_msg)
     gc = graph_config.create_config()
     messages = [
         SystemMessage(
-            content="You are a helpful assistant and can use browser tools to fullfill user's requests"
+            content="""You are a helpful assistant and can use browser tools to fullfill user's requests
+            Never use the URL 'about:blank' on any tool calling argument.
+            """
         ),
         HumanMessage(content=user_msg),
     ]
@@ -312,11 +342,19 @@ async def main():
     for m in weather_response["messages"]:
         m.pretty_print()
 
-    messages = [
-        HumanMessage(
-            content="Give me options for a flight from SF to NYC tomorrow, returning 3 days later"
-        )
-    ]
+    while True:
+        user_msg = input("What can I help you for your travel needs? \n")
+        topic = await get_conversation_topic(user_msg)
+        if topic == Topic.OTHER.value:
+            print("I cannot answer that question!")
+        else:
+            break
+    if topic == Topic.WEATHER.value:
+        graph_config.set_llm_with_structured(schema=Weather)
+    else:
+        graph_config.set_llm_with_structured(schema=Flights)
+
+    messages = [HumanMessage(content=user_msg)]
     flight_response = await graph.ainvoke({"messages": messages}, config=gc)
     for m in flight_response["messages"]:
         m.pretty_print()

@@ -1,5 +1,5 @@
 import random
-from typing import List
+from typing import Any, List
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -21,9 +21,9 @@ class GraphConfig:
         self.llm_with_structured = None
         self.mcp_tools = []
         self.thread_id = random.randint(1, 10)
-        self.config: RunnableConfig = None
+        self.config = None
 
-    def create_config(self) -> RunnableConfig:
+    def create_config(self) -> Any:
         """
         Creates a RunnableConfig instance for the current configuration.
 
@@ -36,7 +36,9 @@ class GraphConfig:
                 "llm_with_structured": self.llm_with_structured,
                 "thread_id": self.thread_id,
                 "mcp_tools": self.mcp_tools,
-            }
+            },
+            "subgraphs": True,
+            "recursionLimit": 10,
         }
         return self.config
 
@@ -61,10 +63,8 @@ class GraphConfig:
         """
         self.llm_with_tools = self.llm.bind_tools(tools, tool_choice="required")
 
-
     def set_llm_with_structured(self, schema: BaseModel) -> None:
         self.llm_with_structured = self.llm.with_structured_output(schema=schema)
-    
 
     def get_llm_with_tools(self) -> Runnable:
         """
