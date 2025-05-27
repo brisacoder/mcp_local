@@ -1,5 +1,4 @@
 import asyncio
-from email import message
 import json
 from typing import Dict, List
 
@@ -7,17 +6,13 @@ import aiofiles
 from dotenv import load_dotenv
 from langchain_core.messages import (
     AIMessage,
-    AnyMessage,
     HumanMessage,
-    RemoveMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.runnables import Runnable
 from langchain_core.tools.structured import StructuredTool
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.client import MultiServerMCPClient, load_mcp_tools
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 
@@ -62,42 +57,62 @@ async def main():
     Returns:
         None
     """
+    # Load OpenAI key
     load_dotenv(override=True)
-    tools = await get_mcp_tools()
-    tool_node = ToolNode(tools)
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
-    llm_with_tools = llm.bind_tools(tools)
-    messages = [
-        SystemMessage(content="You are a helpful travel assistant"),
-        HumanMessage(
-            content=(
-                "Use the browser to find a flight from SFO to JFK"
+
+    # tools = await get_mcp_tools()
+
+    mcp_servers = await load_servers("mcp_config.json")
+
+    client = MultiServerMCPClient(mcp_servers["mcpServers"])
+
+    async with client.session("playwright") as session:
+
+        tools = await load_mcp_tools(session)
+        tool_node = ToolNode(tools)
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+        llm_with_tools = llm.bind_tools(tools)
+        messages = [
+            SystemMessage(content="You are a helpful travel assistant"),
+            HumanMessage(content=("Use a browser to find a flight from SFO to JFK")),
+        ]
+        ai_resp = await llm_with_tools.ainvoke(messages)
+        ai_resp.pretty_print()
+        messages += [ai_resp]
+
+        # tool_output has the page snapshot
+        tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
+        # The browser windows is closed by now. Usually, Gooogle Flights
+        messages += tool_output["messages"]
+        # This will print the tool output, which is a snapshot of the browser page. Lots of information
+        # print(f"Tool output: {tool_output}")
+
+        # Now let's try with more instructions as a possible work around for the browser being closed
+        messages += [
+            HumanMessage(
+                content=(
+                    "Type in all the necessary information on the form to search for flights"
+                )
             )
-        ),
-    ]
-    ai_resp = await llm_with_tools.ainvoke(messages)
-    ai_resp.pretty_print()
-    messages += [ai_resp]
-    # tool_output has the page snapshot
-    tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
-    # The browser windows is closed by now. Usually, Gooogle Flights
-    messages += tool_output["messages"]
-    # This will print the tool output, which is a snapshot of the browser page. Lots of information
-    # print(f"Tool output: {tool_output}")
-    messages += [
-        HumanMessage(
-            content=(
-                "Navigate to the original page again and type in all the necessary "
-                "information on the form to search for flights"
-            )
-        )
-    ]
-    ai_resp = await llm_with_tools.ainvoke(messages)
-    ai_resp.pretty_print()
-    # Now there are two tool calls in the response. These need to be sent as a batch to 
-    # playwright/browser. Not in parallel, and not one at a time.
-    messages += [ai_resp]
-    tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
+        ]
+        ai_resp = await llm_with_tools.ainvoke(messages)
+        # This will sometimes generate an error such as "It seems there was an issue with navigating
+        # to the Google Flights page. Let me attempt to open a different website to search for
+        # flights from SFO to JFK. I'll try using Expedia for this purpose."
+
+        # Alternatively it might have two tool calls as such as browser_click or browser_type.
+        # But the point is that the browser is closed and there is no snapshot context.
+        # Rinse and repeat
+        ai_resp.pretty_print()
+        # IF there are tool calls in the response. These need to be sent as a batch to
+        # playwright/browser. Not in parallel, and not one at a time.
+        messages += [ai_resp]
+        tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
+        tool_output["messages"].pretty_print()
+        # Since there is no smapshot available, the error normally is:
+        # ""Error: ToolException('Error: No current snapshot available. Capture a
+        # snapshot of navigate to a new location first.')\n Please fix your mistakes.""
+
 
 if __name__ == "__main__":
     asyncio.run(main())
