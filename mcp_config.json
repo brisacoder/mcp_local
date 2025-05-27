@@ -5,9 +5,7 @@
             "args": [
                 "@playwright/mcp@latest",
                 "--output-dir=./mcp_data",
-                "--save-trace",
-                "--storage-state=./mcp_storage_state",
-                "--user-data-dir=./mcp_data_dir"
+                "--save-trace"
             ],
             "transport": "stdio" 
         }       

@@ -1,4 +1,5 @@
 import asyncio
+from email import message
 import json
 from typing import Dict, List
 
@@ -44,6 +45,23 @@ async def get_mcp_tools() -> List[StructuredTool]:
 
 
 async def main():
+    """
+    Asynchronously initializes environment variables, loads MCP tools, and sets up a language model with tool bindings.
+    Simulates a conversation with a travel assistant to find a flight from SFO to JFK using browser tools.
+    Prints the AI's response and invokes the tool node with the AI's output.
+
+    Steps:
+    1. Loads environment variables with override enabled.
+    2. Retrieves and initializes MCP tools.
+    3. Sets up a GPT-4o language model with specified temperature.
+    4. Binds the tools to the language model.
+    5. Constructs a conversation with system and human messages.
+    6. Invokes the language model with the conversation and prints the response.
+    7. Passes the AI's response to the tool node for further processing.
+
+    Returns:
+        None
+    """
     load_dotenv(override=True)
     tools = await get_mcp_tools()
     tool_node = ToolNode(tools)
@@ -51,12 +69,24 @@ async def main():
     llm_with_tools = llm.bind_tools(tools)
     messages = [
         SystemMessage(content="You are a helpful travel assistant"),
-        HumanMessage(content="Use the browser to find a flight from SFO to JFK"),
+        HumanMessage(
+            content=(
+                "Use the browser to find a flight from SFO to JFK"
+            )
+        ),
     ]
     ai_resp = await llm_with_tools.ainvoke(messages)
     ai_resp.pretty_print()
-    ret = await tool_node.ainvoke({"messages": [ai_resp]})
-    
+    messages += [ai_resp]
+    # tool_output has the page snapshot
+    tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
+    # The browser windows is closed by now. Usually, Gooogle Flights
+    messages += tool_output["messages"]
+    # This will print the tool output, which is a snapshot of the browser page. Lots of information
+    # print(f"Tool output: {tool_output}")
+    messages += [HumanMessage(content="Navigate to the original page again and type in the form to search for flights")]
+    ai_resp = await llm_with_tools.ainvoke(messages)
+    ai_resp.pretty_print()
 
 if __name__ == "__main__":
     asyncio.run(main())

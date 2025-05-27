@@ -173,3 +173,4 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 .langgraph_api/
+mcp_data/
