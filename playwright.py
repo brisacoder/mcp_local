@@ -84,9 +84,19 @@ async def main():
     messages += tool_output["messages"]
     # This will print the tool output, which is a snapshot of the browser page. Lots of information
     # print(f"Tool output: {tool_output}")
-    messages += [HumanMessage(content="Navigate to the original page again and type in the form to search for flights")]
+    messages += [
+        HumanMessage(
+            content=(
+                "Navigate to the original page again and type in all the necessary "
+                "information on the form to search for flights"
+            )
+        )
+    ]
     ai_resp = await llm_with_tools.ainvoke(messages)
     ai_resp.pretty_print()
+    # Now there are two tool calls in the response. These need to be as a batch by playwright/browser,
+    # Not in parallel, and not one at a time.
+
 
 if __name__ == "__main__":
     asyncio.run(main())
