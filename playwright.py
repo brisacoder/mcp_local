@@ -1,5 +1,7 @@
 import asyncio
 import json
+import re
+import yaml
 from typing import Dict, List
 
 import aiofiles
@@ -14,6 +16,27 @@ from langchain_core.tools.structured import StructuredTool
 from langchain_mcp_adapters.client import MultiServerMCPClient, load_mcp_tools
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import ToolNode
+from langchain_core.prompts import ChatPromptTemplate
+
+
+def extract_and_parse_yaml(text_content_list):
+    """
+    Given a list of TextContent objects (with `.text` attribute containing YAML blocks and fences),
+    this function extracts the YAML portion between ```yaml fences and parses it into native Python.
+    """
+    # Combine all text parts into one string
+    combined_text = "".join(part.text for part in text_content_list)
+
+    # Extract the YAML block between ```yaml and the next ```
+    match = re.search(r"```yaml\s*([\s\S]+?)```", combined_text)
+    if not match:
+        raise ValueError("No YAML block found in the provided content.")
+
+    yaml_blob = match.group(1)
+
+    # Parse the YAML blob into Python data structures
+    tree = yaml.safe_load(yaml_blob)
+    return tree
 
 
 async def load_servers(config_path: str) -> Dict:
@@ -70,19 +93,58 @@ async def main():
 
         tools = await load_mcp_tools(session)
         tool_node = ToolNode(tools)
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+        llm = ChatOpenAI(model="gpt-4.1", temperature=0.1)
         llm_with_tools = llm.bind_tools(tools)
+
+        nav_res = await session.call_tool(
+            "browser_navigate", {"url": "https://www.google.com/travel/flights"}
+        )
+        snap_res = await session.call_tool("browser_snapshot", {})
+        snapshot_tree = extract_and_parse_yaml(snap_res.content)
+        # snapshot_res = await session.call_tool("browser_snapshot", {})
+
         messages = [
-            SystemMessage(content="You are a helpful travel assistant"),
-            HumanMessage(content=("Use a browser to find a flight from SFO to JFK")),
+            SystemMessage(
+                content=(
+                    "You are a helpful travel assistant and an expert on parsing Microsoft "
+                    "PLaywright accessibility tree"
+                )
+            ),
+            (
+                "human",
+                "Use the Microsoft Playwright accessibility tree snapshot for "
+                "https://www.google.com/travel/flights below and tools available "
+                "to take all "
+                "actions to the search a flights from SFO to JFK. Think about all the actions "
+                "needed provide the complete list of tool calls "
+                "to achieve the goal."
+                "\n"
+                "You can take any tool action on the webpage necessary to search for flights, "
+                "such as, but not limited to, click, type, drag, etc. If you are missing user "
+                "preferences such as departure time, make a best guess, do not ask user "
+                "for further information "
+                ""
+                "Assume the browser is already open on the webpage"
+                "\n"
+                "Microsoft Playwright tree:"
+                "\n"
+                "{tree}",
+            ),
         ]
-        ai_resp = await llm_with_tools.ainvoke(messages)
+
+        chat_template = ChatPromptTemplate.from_messages(messages)
+        messages_from_template = chat_template.format_messages(
+            tree=json.dumps(snapshot_tree)
+        )
+
+        ai_resp = await llm_with_tools.ainvoke(messages_from_template)
         ai_resp.pretty_print()
         messages += [ai_resp]
 
         # tool_output has the page snapshot
         tool_output = await tool_node.ainvoke({"messages": [ai_resp]})
         # The browser windows is closed by now. Usually, Gooogle Flights
+
         messages += tool_output["messages"]
         # This will print the tool output, which is a snapshot of the browser page. Lots of information
         # print(f"Tool output: {tool_output}")
@@ -91,8 +153,16 @@ async def main():
         messages += [
             HumanMessage(
                 content=(
-                    "Type in all the necessary information on the search form and provide a list of flights. If you lack "
-                    "user preferences such as departure time, make a best guess, do not ask user for further information"
+                    "Use the Microsoft Playwright accessibility webpage snapshot and tools available "
+                    "to take all further "
+                    "actions to complete the search in the next step. Think about all the actions "
+                    "needed to search for flights and provide the complete list of tool calls "
+                    "to achieve the goal."
+                    ""
+                    "You can take any tool action on the webpage necessary to search for flights, "
+                    "such as, but not limited to, click, type, drag, etc. If you are missing user "
+                    "preferences such as departure time, make a best guess, do not ask user "
+                    "for further information"
                 )
             )
         ]
