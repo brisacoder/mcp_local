@@ -91,7 +91,8 @@ async def main():
         messages += [
             HumanMessage(
                 content=(
-                    "Type in all the necessary information on the form to search for flights"
+                    "Type in all the necessary information on the search form and provide a list of flights. If you lack "
+                    "user preferences such as departure time, make a best guess, do not ask user for further information"
                 )
             )
         ]
